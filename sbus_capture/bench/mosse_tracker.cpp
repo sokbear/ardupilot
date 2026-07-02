@@ -33,14 +33,29 @@ void MosseTracker::prepareBgr(const cv::Mat& main_rgb)
     }
 }
 
+cv::Rect MosseTracker::bboxFromCenterAndScale(const cv::Point2f& center) const
+{
+    const int out_w =
+        std::max(kScaleMinSidePx, static_cast<int>(init_bbox_size_.width * scale_display_));
+    const int out_h =
+        std::max(kScaleMinSidePx, static_cast<int>(init_bbox_size_.height * scale_display_));
+    return clampRect({static_cast<int>(center.x - out_w * 0.5f),
+                      static_cast<int>(center.y - out_h * 0.5f), out_w, out_h},
+                     kMainWidth, kMainHeight);
+}
+
 void MosseTracker::reset()
 {
     tracker_.release();
-    active_        = false;
-    lock_center_   = {};
-    lock_velocity_ = {};
-    lock_bbox_     = {};
-    miss_frames_   = 0;
+    scaler_.reset();
+    active_           = false;
+    lock_center_      = {};
+    lock_velocity_    = {};
+    lock_bbox_        = {};
+    init_bbox_size_   = {};
+    scale_display_    = 1.0f;
+    last_scale_ratio_ = 1.0f;
+    miss_frames_      = 0;
 }
 
 bool MosseTracker::init(const cv::Mat& main_rgb, const cv::Rect& roi_main)
@@ -59,8 +74,13 @@ bool MosseTracker::init(const cv::Mat& main_rgb, const cv::Rect& roi_main)
     }
 
     lock_bbox_ = clampRect(roi_main, kMainWidth, kMainHeight);
+    init_bbox_size_ = lock_bbox_.size();
     lock_center_ = {lock_bbox_.x + lock_bbox_.width * 0.5f,
                     lock_bbox_.y + lock_bbox_.height * 0.5f};
+    scale_display_    = 1.0f;
+    last_scale_ratio_ = 1.0f;
+
+    scaler_.init(main_bgr_, lock_bbox_);
 
     tracker_ = cv::legacy::TrackerMOSSE::create();
     if (!tracker_ || !tracker_->init(main_bgr_, lock_bbox_)) {
@@ -68,12 +88,13 @@ bool MosseTracker::init(const cv::Mat& main_rgb, const cv::Rect& roi_main)
         return false;
     }
 
-    active_      = true;
-    miss_frames_ = 0;
+    active_        = true;
+    miss_frames_   = 0;
     return true;
 }
 
-MarkerDetection MosseTracker::update(const cv::Mat& main_rgb, double dt_sec)
+MarkerDetection MosseTracker::update(const cv::Mat& main_rgb, double dt_sec,
+                                     bool run_scale_refine)
 {
     MarkerDetection out;
     if (!active_ || main_rgb.empty()) {
@@ -107,20 +128,28 @@ MarkerDetection MosseTracker::update(const cv::Mat& main_rgb, double dt_sec)
             out.track      = MarkerTrackMode::Predicted;
             out.ex         = predicted.x - frame_center.x;
             out.ey         = predicted.y - frame_center.y;
-            out.bbox       = lock_bbox_;
-            out.bbox.x     = static_cast<int>(predicted.x - lock_bbox_.width * 0.5f);
-            out.bbox.y     = static_cast<int>(predicted.y - lock_bbox_.height * 0.5f);
+            out.bbox       = bboxFromCenterAndScale(predicted);
             out.confidence = 0.2f;
         }
         return out;
     }
 
-    const cv::Rect bbox_main =
-        clampRect({static_cast<int>(bbox.x), static_cast<int>(bbox.y),
-                   static_cast<int>(bbox.width), static_cast<int>(bbox.height)},
-                  kMainWidth, kMainHeight);
-    const cv::Point2f center{bbox_main.x + bbox_main.width * 0.5f,
-                             bbox_main.y + bbox_main.height * 0.5f};
+    cv::Point2f center{static_cast<float>(bbox.x + bbox.width * 0.5),
+                       static_cast<float>(bbox.y + bbox.height * 0.5)};
+
+    if (run_scale_refine) {
+        float measured = scale_display_;
+        if (scaler_.measureScale(main_bgr_, center, init_bbox_size_, measured)) {
+            scale_display_ = measured;
+        }
+    } else {
+        const float target = scaler_.scaleTarget();
+        scale_display_ += (target - scale_display_) * kScaleDisplayAlpha;
+        scale_display_ = std::clamp(scale_display_, kScaleMinRatio, kScaleMaxRatio);
+    }
+
+    cv::Rect bbox_main = bboxFromCenterAndScale(center);
+    center = {bbox_main.x + bbox_main.width * 0.5f, bbox_main.y + bbox_main.height * 0.5f};
 
     const cv::Point2f instant_v = (center - lock_center_) / static_cast<float>(dt_sec);
     lock_velocity_ = lock_velocity_ * (1.0f - kVelocityEmaAlpha) +
@@ -128,6 +157,14 @@ MarkerDetection MosseTracker::update(const cv::Mat& main_rgb, double dt_sec)
     lock_center_ = center;
     lock_bbox_   = bbox_main;
     miss_frames_ = 0;
+
+    if (run_scale_refine &&
+        std::abs(scale_display_ - last_scale_ratio_) > kScaleReinitThreshold) {
+        if (tracker_) {
+            tracker_->init(main_bgr_, lock_bbox_);
+        }
+        last_scale_ratio_ = scale_display_;
+    }
 
     out.valid      = true;
     out.live       = true;

@@ -14,6 +14,7 @@ add_executable(electronic_pilot_bench
     main.cpp
     camera_capture.cpp
     coord_map.cpp
+    bbox_scaler.cpp
     mosse_tracker.cpp
     osd_renderer.cpp
     composite_out.cpp

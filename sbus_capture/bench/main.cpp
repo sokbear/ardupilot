@@ -112,6 +112,9 @@ int main()
         roi_sel.update(mouse, bench::kMainWidth, bench::kMainHeight);
         mouse.clearEdges();
 
+        const auto now = clock::now();
+        const bool pal_tick = (now >= next_pal_tick);
+
         const cv::Rect roi_main = roi_sel.trackRoiMain();
         if (roi_main.width > 0 &&
             (roi_main.x != prev_roi.x || roi_main.y != prev_roi.y ||
@@ -132,9 +135,9 @@ int main()
             telem.mode = "WAIT ROI";
         }
 
-        // --- 2. FullHD: MOSSE и координаты метки (ex/ey, bbox в main) ---
+        // --- 2. FullHD @60 MOSSE; масштаб matchTemplate @25 Hz (PAL-тик), ROI cap+downscale ---
         if (mosse.active() && !frame.main_rgb.empty()) {
-            det_main = mosse.update(frame.main_rgb, dt_sec);
+            det_main = mosse.update(frame.main_rgb, dt_sec, pal_tick);
             if (det_main.capturing) {
                 track_loss_frames = 0;
             } else if (roi_sel.hasTrackRoi()) {
@@ -157,8 +160,7 @@ int main()
         telem.pan_deg  = gstate.pan_deg;
         telem.tilt_deg = gstate.tilt_deg;
 
-        const auto now = clock::now();
-        if (now >= next_pal_tick) {
+        if (pal_tick) {
             // --- 3. FullHD → PAL (720×576) ---
             cv::Mat pal_bgr = bench::makeLoresFromFrame(frame);
 

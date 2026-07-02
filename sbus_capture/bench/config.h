@@ -36,6 +36,22 @@ constexpr bool kCameraRgb888BytesAreRgb = true;
 constexpr int kMosseMaxMissFrames   = 18;
 constexpr int   kTrackLossClearFrames = 45;
 
+// Масштаб: matchTemplate в ROI (cap + downscale), refine @ PAL 25 Hz; MOSSE @ 60 Hz FullHD.
+constexpr float kScaleRoiWindowFactor = 2.0f;
+constexpr int   kScaleRoiMaxSide      = 384;   // cap окна поиска (px)
+constexpr int   kScaleSearchMaxSide   = 256;   // matchTemplate на уменьшенном ROI
+constexpr int   kScaleLocalSteps      = 5;
+constexpr float kScaleLocalMin        = 0.65f;
+constexpr float kScaleLocalMax        = 1.85f;
+constexpr float kScaleGrowAlpha       = 0.72f;
+constexpr float kScaleShrinkAlpha     = 0.35f;
+constexpr float kScaleDisplayAlpha    = 0.62f;  // догон target между PAL-тиками (~40 ms)
+constexpr float kScaleMinRatio        = 0.35f;
+constexpr float kScaleMaxRatio        = 2.5f;
+constexpr int   kScaleMinSidePx       = 12;
+constexpr float kScaleMinResponse     = 0.28f;
+constexpr float kScaleReinitThreshold = 0.14f;
+
 // Мышь: выделение ROI на PAL-экране (lores 720×576).
 constexpr int kRoiMinSelectSidePx = 24;  // мин. сторона рамки выделения, px
 constexpr const char* kI2cBusPath     = "/dev/i2c-1";
