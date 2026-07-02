@@ -1,0 +1,17 @@
+[Unit]
+Description=Electronic Pilot bench (user)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pilot/ardupilot/sbus_capture/bench/build
+ExecStartPre=/bin/sleep 12
+ExecStart=/home/pilot/ardupilot/sbus_capture/bench/build/electronic_pilot_bench
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/pilot/bench.log
+StandardError=append:/home/pilot/bench.log
+
+[Install]
+WantedBy=default.target

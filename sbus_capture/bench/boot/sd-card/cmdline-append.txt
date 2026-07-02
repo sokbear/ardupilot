@@ -1,0 +1,8 @@
+# Добавить в конец /boot/firmware/cmdline.txt (одной строкой):
+# Boot-консоль на HDMI: НЕ указывать video=HDMI-A-1 (режим из EDID монитора).
+# НЕ добавлять fbcon=map:1 — на Pi 5 это переносит консоль на composite (PAL).
+# НЕ добавлять video=Composite-1:... — boot на аналоговый монитор.
+#
+# vc4.tv_norm=PAL — для PAL composite в приложении (см. cmdline-pal-optional.txt).
+
+net.ifnames=0

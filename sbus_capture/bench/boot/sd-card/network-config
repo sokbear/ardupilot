@@ -1,0 +1,11 @@
+# Pi 5: end0 (default) and eth0 (if net.ifnames=0 in cmdline).
+network:
+  version: 2
+  renderer: NetworkManager
+  ethernets:
+    end0:
+      dhcp4: true
+      optional: true
+    eth0:
+      dhcp4: true
+      optional: true

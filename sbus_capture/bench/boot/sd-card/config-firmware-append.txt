@@ -1,0 +1,4 @@
+# Добавляется в /boot/firmware/config.txt при подготовке SD (стенд этап 1)
+dtparam=i2c_arm=on
+dtoverlay=vc4-kms-v3d,composite
+camera_auto_detect=1

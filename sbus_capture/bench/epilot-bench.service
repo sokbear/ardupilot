@@ -1,0 +1,23 @@
+[Unit]
+Description=Electronic Pilot bench (stage 1)
+After=network-online.target
+Wants=network-online.target
+# Камера и composite появляются не сразу после boot.
+After=systemd-udev-settle.service
+
+[Service]
+Type=simple
+User=pilot
+Group=pilot
+SupplementaryGroups=video render i2c gpio input
+WorkingDirectory=/home/pilot/ardupilot/sbus_capture/bench/build
+ExecStart=/home/pilot/ardupilot/sbus_capture/bench/build/electronic_pilot_bench
+Restart=on-failure
+RestartSec=5
+# Даём DRM/камере подняться после включения питания.
+ExecStartPre=/bin/sleep 8
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

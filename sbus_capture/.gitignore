@@ -1,0 +1,4 @@
+*.o
+sbus_capture
+bench/build/
+bench/build-*/

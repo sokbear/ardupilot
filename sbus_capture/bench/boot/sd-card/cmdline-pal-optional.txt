@@ -1,0 +1,3 @@
+# PAL norm for composite (optional; bench app sets mode via DRM).
+# Do NOT add video=Composite-1 here — that moves login/console to analog monitor.
+vc4.tv_norm=PAL

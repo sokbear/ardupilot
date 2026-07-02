@@ -1,0 +1,10 @@
+# Фрагменты для /boot/firmware — Raspberry Pi 5, PAL composite (J7)
+#
+# 1) config.txt — заменить или дополнить строку dtoverlay:
+dtoverlay=vc4-kms-v3d,composite
+
+# 2) cmdline.txt — добавить в КОНЕЦ одной строки (через пробел):
+vc4.tv_norm=PAL video=Composite-1:720x576i,tv_mode=PAL
+
+# 3) Перезагрузка:
+# sudo reboot
