@@ -1,32 +1,21 @@
 #include "camera_capture.h"
-
 #include "config.h"
-
 #include "composite_out.h"
-
 #include "coord_map.h"
-
+#include "display_hub.h"
 #include "gimbal_tracker.h"
-
-#include "mosse_tracker.h"
-
+#include "marker_tracker.h"
 #include "mouse_input.h"
-
 #include "osd_renderer.h"
-
 #include "roi_selector.h"
-
 #include "servo_gimbal.h"
-
 #include "track_result.h"
 
 #include <atomic>
-
 #include <chrono>
-
 #include <csignal>
-
 #include <iostream>
+#include <thread>
 
 namespace {
 
@@ -46,12 +35,13 @@ int main()
 
     bench::CameraCapture camera;
     bench::CompositeOutput composite;
-    bench::MosseTracker   mosse;
+    bench::MarkerTracker  marker;
     bench::OsdRenderer osd;
     bench::ServoGimbal gimbal;
     bench::GimbalTracker tracker(gimbal);
     bench::MouseInput mouse;
     bench::RoiSelector roi_sel;
+    bench::DisplayHub display;
 
     if (!camera.open()) {
         return 1;
@@ -76,21 +66,62 @@ int main()
     telem.gimbal_hw = gimbal.hardwareActive();
 
     cv::Rect prev_roi;
-    int      track_loss_frames = 0;
+    bool     prev_was_lost = false;
 
     using clock = std::chrono::steady_clock;
-    const auto pal_period =
-        std::chrono::milliseconds(1000 / bench::kLoresFps);
-    auto next_pal_tick = clock::now();
+    clock::time_point lost_banner_until{};
     auto prev_loop     = clock::now();
     uint64_t prev_frame_seq = 0;
 
     bench::MarkerDetection det_main;
-    unsigned pal_frames  = 0;
-    unsigned track_frames = 0;
+    std::atomic<unsigned> track_frames{0};
+    std::atomic<unsigned> pal_frames{0};
+
+    std::thread pal_thread([&]() {
+        const auto pal_period =
+            std::chrono::milliseconds(1000 / bench::kLoresFps);
+        auto next_pal_tick = clock::now();
+
+        while (g_running.load(std::memory_order_relaxed)) {
+            next_pal_tick += pal_period;
+
+            bench::DisplaySnapshot snap;
+            if (display.consume(snap) && !snap.main_rgb.empty()) {
+                bench::CameraFrame frame;
+                frame.main_rgb = snap.main_rgb;
+                cv::Mat pal_bgr = bench::makeLoresFromFrame(frame);
+
+                const bench::PalMarkerOverlay pal_overlay = bench::mapDetectionToPal(
+                    snap.det, bench::kMainWidth, bench::kMainHeight, bench::kLoresWidth,
+                    bench::kLoresHeight);
+
+                osd.render(pal_bgr, snap.det, pal_overlay, snap.telem, snap.roi_ui);
+                composite.present(pal_bgr);
+
+                const unsigned n = ++pal_frames;
+                if ((n % bench::kLoresFps) == 0) {
+                    std::cout << "bench: pal=" << n << " track=" << track_frames.load()
+                              << " cap=" << (snap.det.capturing ? "yes" : "no")
+                              << " trk=" << static_cast<int>(snap.det.track)
+                              << " roi=" << (snap.roi_ui.roi_locked ? "yes" : "no")
+                              << " pan=" << snap.telem.pan_deg
+                              << " tilt=" << snap.telem.tilt_deg;
+                    if (snap.det.capturing) {
+                        std::cout << " ex=" << snap.det.ex << " ey=" << snap.det.ey;
+                        if (snap.det.bbox.width > 0) {
+                            std::cout << " box=" << snap.det.bbox.width << 'x'
+                                      << snap.det.bbox.height;
+                        }
+                    }
+                    std::cout << std::endl;
+                }
+            }
+
+            std::this_thread::sleep_until(next_pal_tick);
+        }
+    });
 
     while (g_running) {
-        // --- 1. FullHD @kMainFps: приём кадра с камеры ---
         bench::CameraFrame frame;
         if (!camera.grabLatest(frame, 1)) {
             continue;
@@ -112,81 +143,91 @@ int main()
         roi_sel.update(mouse, bench::kMainWidth, bench::kMainHeight);
         mouse.clearEdges();
 
-        const auto now = clock::now();
-        const bool pal_tick = (now >= next_pal_tick);
-
         const cv::Rect roi_main = roi_sel.trackRoiMain();
         if (roi_main.width > 0 &&
             (roi_main.x != prev_roi.x || roi_main.y != prev_roi.y ||
              roi_main.width != prev_roi.width || roi_main.height != prev_roi.height)) {
             if (frame.main_rgb.empty()) {
-                std::cerr << "bench: MOSSE init failed — need FullHD RGB888 stream\n";
-            } else if (mosse.init(frame.main_rgb, roi_main)) {
+                std::cerr << "bench: tracker init failed — need FullHD RGB888 stream\n";
+            } else if (marker.init(frame.main_rgb, roi_main)) {
                 prev_roi = roi_main;
-                telem.mode = "ROI+MOSSE";
-                std::cout << "bench: MOSSE init " << roi_main.x << ',' << roi_main.y << ' '
+                prev_was_lost = false;
+                lost_banner_until = {};
+                telem.mode = "TRACK";
+                std::cout << "bench: tracker init " << roi_main.x << ',' << roi_main.y << ' '
                           << roi_main.width << 'x' << roi_main.height << '\n';
             } else {
-                std::cerr << "bench: MOSSE init failed\n";
+                std::cerr << "bench: tracker init failed\n";
             }
         } else if (!roi_sel.hasTrackRoi() && prev_roi.width > 0) {
-            mosse.reset();
+            marker.reset();
             prev_roi = {};
+            prev_was_lost = false;
             telem.mode = "WAIT ROI";
         }
 
-        // --- 2. FullHD @60 MOSSE; масштаб matchTemplate @25 Hz (PAL-тик), ROI cap+downscale ---
-        if (mosse.active() && !frame.main_rgb.empty()) {
-            det_main = mosse.update(frame.main_rgb, dt_sec, pal_tick);
-            if (det_main.capturing) {
-                track_loss_frames = 0;
-            } else if (roi_sel.hasTrackRoi()) {
-                ++track_loss_frames;
-                if (track_loss_frames >= bench::kTrackLossClearFrames) {
-                    roi_sel.clearRoi();
-                    mosse.reset();
-                    prev_roi = {};
-                    track_loss_frames = 0;
-                    telem.mode = "WAIT ROI";
-                    det_main = {};
-                    std::cout << "bench: track lost — ROI cleared\n";
+        if (marker.active() && !frame.main_rgb.empty()) {
+            det_main = marker.update(frame.main_rgb, dt_sec);
+
+            if (marker.needsOperatorRoi()) {
+                roi_sel.clearRoi();
+                marker.reset();
+                prev_roi          = {};
+                prev_was_lost     = false;
+                lost_banner_until = {};
+                telem.mode        = "WAIT ROI";
+                det_main          = {};
+            } else if (det_main.track == bench::MarkerTrackMode::Lost) {
+                telem.mode = "LOST";
+                if (!prev_was_lost) {
+                    lost_banner_until = loop_now + std::chrono::duration_cast<clock::duration>(
+                                            std::chrono::duration<double>(
+                                                bench::kOsdLostMessageSec));
+                    prev_was_lost     = true;
                 }
+            } else if (det_main.capturing) {
+                telem.mode        = "TRACK";
+                prev_was_lost     = false;
+                lost_banner_until = {};
+            } else if (det_main.track == bench::MarkerTrackMode::Predicted) {
+                telem.mode = "SEARCH";
             }
         } else {
             det_main = {};
+        }
+
+        telem.lost_banner = (loop_now < lost_banner_until);
+
+        if (det_main.track == bench::MarkerTrackMode::Lost && !telem.lost_banner &&
+            lost_banner_until == clock::time_point{}) {
+            lost_banner_until = loop_now + std::chrono::duration_cast<clock::duration>(
+                                    std::chrono::duration<double>(bench::kOsdLostMessageSec));
+            telem.lost_banner = true;
         }
 
         const bench::GimbalState gstate = tracker.update(det_main, dt_sec);
         telem.pan_deg  = gstate.pan_deg;
         telem.tilt_deg = gstate.tilt_deg;
 
-        if (pal_tick) {
-            // --- 3. FullHD → PAL (720×576) ---
-            cv::Mat pal_bgr = bench::makeLoresFromFrame(frame);
-
-            // --- 4. Координаты метки FullHD → PAL (рамка OSD) ---
-            const bench::PalMarkerOverlay pal_overlay = bench::mapDetectionToPal(
-                det_main, bench::kMainWidth, bench::kMainHeight, bench::kLoresWidth,
-                bench::kLoresHeight);
-
-            // --- 5. Рамка + OSD на PAL ---
-            osd.render(pal_bgr, det_main, pal_overlay, telem, roi_sel.ui());
-            composite.present(pal_bgr);
-
-            next_pal_tick = now + pal_period;
-            ++pal_frames;
-
-            if ((pal_frames % bench::kLoresFps) == 0) {
-                std::cout << "bench: pal=" << pal_frames << " track=" << track_frames
-                          << " cap=" << (det_main.capturing ? "yes" : "no")
-                          << " roi=" << (roi_sel.hasTrackRoi() ? "yes" : "no")
-                          << " pan=" << gstate.pan_deg << " tilt=" << gstate.tilt_deg;
-                if (det_main.capturing) {
-                    std::cout << " ex=" << det_main.ex << " ey=" << det_main.ey;
-                }
-                std::cout << std::endl;
-            }
+        cv::Point2f track_center{};
+        if (det_main.valid && det_main.bbox.width > 0) {
+            track_center = {det_main.bbox.x + det_main.bbox.width * 0.5f,
+                            det_main.bbox.y + det_main.bbox.height * 0.5f};
         }
+
+        bench::DisplaySnapshot pub;
+        pub.det             = det_main;
+        pub.telem           = telem;
+        pub.roi_ui          = roi_sel.ui();
+        pub.tracking_active = marker.active() && det_main.capturing;
+        pub.track_center    = track_center;
+        pub.init_bbox_size  = marker.initBboxSize();
+
+        display.publish(frame.main_rgb, frame.seq, loop_now, pub);
+    }
+
+    if (pal_thread.joinable()) {
+        pal_thread.join();
     }
 
     gimbal.setAnglesDeg(0.0f, 0.0f);

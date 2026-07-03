@@ -15,6 +15,7 @@ struct OsdTelemetry {
     float pan_deg      = 0.0f;
     float tilt_deg     = 0.0f;
     bool  gimbal_hw    = false;
+    bool  lost_banner  = false;  // «Потеря метки» по центру экрана
 };
 
 class OsdRenderer {

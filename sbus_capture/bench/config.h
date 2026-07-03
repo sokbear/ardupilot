@@ -14,8 +14,11 @@ constexpr int kLoresWidth  = 720;
 constexpr int kLoresHeight = 576;
 constexpr int kLoresFps    = 25;
 
-// OSD
-constexpr int kOsdMarkerBoxThickness = 1;
+// OSD: сообщение о потере метки по центру экрана.
+constexpr double kOsdLostMessageSec   = 3.0;
+constexpr double kOsdLostMessageScale = 1.35;
+constexpr int    kOsdLostMessageThick = 3;
+constexpr int    kOsdMarkerBoxThickness = 1;
 // BGR в OpenCV; composite DRM (RG24) получает RGB — конверсия в composite_out::present.
 constexpr int kOsdColorCapturedB = 0;
 constexpr int kOsdColorCapturedG = 0;
@@ -23,8 +26,11 @@ constexpr int kOsdColorCapturedR = 255;
 constexpr int kOsdColorLostB     = 255;
 constexpr int kOsdColorLostG     = 0;
 constexpr int kOsdColorLostR     = 0;
+constexpr int kOsdColorCursorB   = 255;
+constexpr int kOsdColorCursorG   = 0;
+constexpr int kOsdColorCursorR   = 0;
 
-constexpr float kVelocityEmaAlpha = 0.35f;  // сглаживание скорости цели (MOSSE)
+constexpr float kVelocityEmaAlpha = 0.35f;
 
 // Камера: меньше буферов → ниже задержка (DMA-буферы libcamera).
 constexpr int kCameraBufferCount   = 3;
@@ -33,24 +39,51 @@ constexpr int kCameraPublishSlots  = 3;  // triple-buffer: без clone 1080p в
 // IMX708 RGB888/sRGB: байты в буфере = RGB. При main=NV12 не используется.
 constexpr bool kCameraRgb888BytesAreRgb = true;
 
-constexpr int kMosseMaxMissFrames   = 18;
-constexpr int   kTrackLossClearFrames = 45;
-
-// Масштаб: matchTemplate в ROI (cap + downscale), refine @ PAL 25 Hz; MOSSE @ 60 Hz FullHD.
-constexpr float kScaleRoiWindowFactor = 2.0f;
-constexpr int   kScaleRoiMaxSide      = 384;   // cap окна поиска (px)
-constexpr int   kScaleSearchMaxSide   = 256;   // matchTemplate на уменьшенном ROI
-constexpr int   kScaleLocalSteps      = 5;
-constexpr float kScaleLocalMin        = 0.65f;
-constexpr float kScaleLocalMax        = 1.85f;
-constexpr float kScaleGrowAlpha       = 0.72f;
-constexpr float kScaleShrinkAlpha     = 0.35f;
-constexpr float kScaleDisplayAlpha    = 0.62f;  // догон target между PAL-тиками (~40 ms)
-constexpr float kScaleMinRatio        = 0.35f;
-constexpr float kScaleMaxRatio        = 2.5f;
-constexpr int   kScaleMinSidePx       = 12;
-constexpr float kScaleMinResponse     = 0.28f;
-constexpr float kScaleReinitThreshold = 0.14f;
+// Трекер: init-сегментация + сегментация в зоне при треке (масштаб и центр).
+constexpr int   kTemplateRefMaxSide     = 96;
+constexpr int   kTrackExtractMaxSide    = 128;
+constexpr int   kNccSearchMaxSide       = 96;
+constexpr float kWeightSigmaFactor      = 0.28f;
+constexpr float kSearchWindowFactor     = 1.08f;
+constexpr float kSearchMaxDriftFactor   = 0.16f;
+constexpr float kLatchMaxPredDistFactor = 0.12f;
+constexpr int   kCenterLockFrames       = 10;
+constexpr int   kCenterLockTemplate     = 14;
+constexpr float kSegMaxZoneFillRatio    = 0.88f;
+constexpr float kSegMinRoiSideRatio     = 0.18f;
+constexpr float kSegMinRoiAreaRatio     = 0.04f;
+constexpr float kSegPreferDistFactor    = 0.45f;
+constexpr float kSegMinCircularity      = 0.55f;
+constexpr float kSegMinZoneAreaFactor   = 0.002f;
+constexpr int   kSegMinAbsAreaPx        = 36;
+constexpr float kSegTrackZoneFactor     = 1.55f;
+constexpr float kSegTrackZoneFactorLarge = 1.85f;
+constexpr float kSegLargeScaleThreshold = 2.2f;
+constexpr float kSegReacquireZoneFactor = 2.4f;
+constexpr float kSegMaxCenterStepFactor = 0.32f;
+constexpr float kScaleSmoothAlpha       = 0.32f;
+constexpr float kScaleMaxStepRatio      = 0.14f;
+constexpr float kScaleMeasureMaxJump    = 1.28f;
+constexpr float kScaleMinRatio          = 0.25f;
+constexpr float kScaleMaxRatio          = 4.5f;
+constexpr float kBboxMaxFrameSideRatio  = 0.42f;
+constexpr float kMinContrastForSeg      = 22.0f;
+constexpr float kSearchWindowTemplate   = 1.14f;
+constexpr float kSearchDriftTemplate    = 0.22f;
+constexpr float kScaleProbeDownMul      = 0.90f;
+constexpr float kScaleProbeUpMul        = 1.12f;
+constexpr int   kScaleProbeEveryNFrames = 6;
+constexpr float kTrackMinResponse       = 0.32f;
+constexpr float kTrackMinResponseTemplate = 0.20f;
+constexpr int   kVerifyFailToSearch     = 18;
+constexpr int   kVerifyFailTemplate     = 35;
+constexpr float kSegInitMaxCenterShift  = 0.20f;
+constexpr float kSegInitMinAreaRatio    = 0.06f;
+constexpr float kTrackMinVisibleFraction = 0.45f;
+constexpr int   kRelocateEveryNFrames   = 2;
+constexpr double kTrackReacquireTimeoutSec = 2.0;
+constexpr double kTrackSearchGiveUpSec    = 3.0;
+constexpr int    kScaleMinSidePx        = 12;
 
 // Мышь: выделение ROI на PAL-экране (lores 720×576).
 constexpr int kRoiMinSelectSidePx = 24;  // мин. сторона рамки выделения, px

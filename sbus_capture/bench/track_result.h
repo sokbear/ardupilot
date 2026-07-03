@@ -7,7 +7,8 @@ namespace bench {
 enum class MarkerTrackMode {
     None,
     Live,
-    Predicted,
+    Predicted,  // MOSSE потерял, идёт поиск по шаблону (до kTrackReacquireTimeoutSec)
+    Lost,       // таймаут 1 с — метка не найдена
 };
 
 struct MarkerDetection {
