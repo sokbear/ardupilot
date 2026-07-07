@@ -127,6 +127,7 @@ int main()
             continue;
         }
         if (frame.seq == prev_frame_seq) {
+            std::this_thread::sleep_for(std::chrono::microseconds(500));
             continue;
         }
 

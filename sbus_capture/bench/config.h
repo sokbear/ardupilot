@@ -37,7 +37,13 @@ constexpr int kCameraBufferCount   = 3;
 constexpr int kCameraPublishSlots  = 3;  // triple-buffer: без clone 1080p в grabLatest
 
 // IMX708 RGB888/sRGB: байты в буфере = RGB. При main=NV12 не используется.
-constexpr bool kCameraRgb888BytesAreRgb = true;
+// false = камера отдаёт BGR888 (Шаг 5); true = RGB888 → конверсия в трекере.
+constexpr bool kCameraRgb888BytesAreRgb = false;
+
+// === Профиль сцены для трекера (переключаемая ветка) ===
+// 0 = Cluttered (пёстрый фон / лес): цветной CSRT (HOG + Color Names + сегментация).
+// 1 = Sky       (силуэт на небе):    CSRT только по яркости (HOG) — дешевле, без цветового шума.
+constexpr int kTrackerSceneProfile = 0;
 
 // Трекер: init-сегментация + сегментация в зоне при треке (масштаб и центр).
 constexpr int   kTemplateRefMaxSide     = 96;

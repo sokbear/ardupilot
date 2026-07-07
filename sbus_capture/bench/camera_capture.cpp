@@ -283,7 +283,8 @@ bool CameraCapture::open()
         return impl->config->validate() != CameraConfiguration::Invalid;
     };
 
-    if (!configureMain(formats::RGB888) && !configureMain(formats::NV12)) {
+    if (!configureMain(formats::BGR888) && !configureMain(formats::RGB888) &&
+        !configureMain(formats::NV12)) {
         std::cerr << "bench: invalid camera configuration (FullHD RGB888/NV12)\n";
         close();
         return false;
