@@ -6,6 +6,7 @@
 #include <cmath>
 #include <iostream>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/tracking/tracking_legacy.hpp>
 
 namespace bench {
 
@@ -388,10 +389,12 @@ bool segmentDarkCircle(const cv::Mat& gray, const cv::Rect& zone, cv::Point2f pr
 }
 
 bool initSegmentBbox(const cv::Mat& gray, const cv::Rect& roi, cv::Point2f roi_center,
-                     cv::Rect& seg_bbox)
+                     cv::Rect& seg_bbox, bool& used_circle_out)
 {
-    seg_bbox = roi;
+    seg_bbox         = roi;
+    used_circle_out = false;
     if (segmentDarkCircle(gray, roi, roi_center, seg_bbox)) {
+        used_circle_out = true;
         return true;
     }
     if (segmentDarkBlob(gray, roi, roi_center, seg_bbox)) {
@@ -426,6 +429,13 @@ void MarkerTracker::resetUnlocked()
     velocity_          = {};
     scale_             = 1.0f;
     use_seg_track_     = false;
+    use_mosse_track_   = false;
+    mosse_bbox_        = {};
+    mosse_scale_       = 1.0f;
+    mosse_soft_miss_   = 0;
+    mosse_tracker_.release();
+    main_bgr_.release();
+    mosse_scale_gray_.release();
     contrast_score_    = 0.0f;
     active_            = false;
     miss_frames_       = 0;
@@ -443,6 +453,95 @@ void MarkerTracker::reset()
 {
     std::lock_guard<std::mutex> lock(mtx_);
     resetUnlocked();
+}
+
+void MarkerTracker::prepareBgr(const cv::Mat& main_rgb)
+{
+    if (main_rgb.empty()) {
+        main_bgr_.release();
+        return;
+    }
+    if (main_rgb.channels() == 1) {
+        cv::cvtColor(main_rgb, main_bgr_, cv::COLOR_GRAY2BGR);
+        return;
+    }
+    if (kCameraRgb888BytesAreRgb) {
+        cv::cvtColor(main_rgb, main_bgr_, cv::COLOR_RGB2BGR);
+    } else if (main_bgr_.data != main_rgb.data) {
+        main_rgb.copyTo(main_bgr_);
+    }
+}
+
+cv::Rect MarkerTracker::mosseBboxAt(cv::Point2f center, float scale) const
+{
+    const cv::Size sz = scaledSize(init_bbox_size_, scale);
+    return clampRect({static_cast<int>(std::lround(center.x - sz.width * 0.5f)),
+                      static_cast<int>(std::lround(center.y - sz.height * 0.5f)), sz.width,
+                      sz.height},
+                     kMainWidth, kMainHeight);
+}
+
+bool MarkerTracker::initMosse(const cv::Mat& main_rgb, const cv::Rect& roi)
+{
+    prepareBgr(main_rgb);
+    if (main_bgr_.empty()) {
+        return false;
+    }
+
+    const cv::Rect lock = clampRect(roi, kMainWidth, kMainHeight);
+    mosse_tracker_      = cv::legacy::TrackerMOSSE::create();
+    if (!mosse_tracker_ || !mosse_tracker_->init(main_bgr_, lock)) {
+        mosse_tracker_.release();
+        return false;
+    }
+
+    mosse_bbox_      = lock;
+    mosse_scale_     = 1.0f;
+    mosse_soft_miss_ = 0;
+    use_mosse_track_ = true;
+    return true;
+}
+
+void MarkerTracker::maybeReinitMosse(float prev_scale)
+{
+    if (!use_mosse_track_ || !mosse_tracker_ || main_bgr_.empty()) {
+        return;
+    }
+    if (std::abs(scale_ - prev_scale) < kMosseReinitScaleThreshold) {
+        return;
+    }
+    if (std::abs(scale_ - mosse_scale_) < kMosseReinitScaleThreshold) {
+        return;
+    }
+
+    const cv::Rect bbox = mosseBboxAt(center_, scale_);
+    if (bbox.width < 8 || bbox.height < 8) {
+        return;
+    }
+    if (!mosse_tracker_->init(main_bgr_, bbox)) {
+        return;
+    }
+    mosse_bbox_  = bbox;
+    mosse_scale_ = scale_;
+}
+
+bool MarkerTracker::updateMossePosition(cv::Point2f& out_center)
+{
+    if (!mosse_tracker_ || main_bgr_.empty() || mosse_bbox_.width <= 0) {
+        return false;
+    }
+
+    cv::Rect2d bbox = mosse_bbox_;
+    if (!mosse_tracker_->update(main_bgr_, bbox)) {
+        return false;
+    }
+
+    mosse_bbox_ = clampRect({static_cast<int>(bbox.x), static_cast<int>(bbox.y),
+                             static_cast<int>(bbox.width), static_cast<int>(bbox.height)},
+                            kMainWidth, kMainHeight);
+    out_center = {mosse_bbox_.x + mosse_bbox_.width * 0.5f,
+                  mosse_bbox_.y + mosse_bbox_.height * 0.5f};
+    return true;
 }
 
 void MarkerTracker::prepareGray(const cv::Mat& main_rgb, cv::Mat& gray_out)
@@ -564,7 +663,9 @@ bool MarkerTracker::init(const cv::Mat& main_rgb, const cv::Rect& roi_main)
     contrast_score_ = measureRoiContrast(gray_work_, roi);
 
     cv::Rect seg_bbox = roi;
-    const bool seg_found = initSegmentBbox(gray_work_, roi, roi_center, seg_bbox);
+    bool     seg_used_circle = false;
+    const bool seg_found =
+        initSegmentBbox(gray_work_, roi, roi_center, seg_bbox, seg_used_circle);
     const bool seg_smaller =
         seg_found &&
         (seg_bbox.area() < static_cast<int>(roi.area() * kSegMaxZoneFillRatio) ||
@@ -581,7 +682,8 @@ bool MarkerTracker::init(const cv::Mat& main_rgb, const cv::Rect& roi_main)
         seg_smaller && (initSegTrusted(gray_work_, roi, roi_center, seg_bbox) ||
                         seg_shift <= shift_lim);
 
-    use_seg_track_ = use_seg && contrast_score_ >= kMinContrastForSeg;
+    use_seg_track_ = seg_used_circle && use_seg && contrast_score_ >= kMinContrastForSeg;
+    use_mosse_track_ = false;
 
     if (use_seg_track_) {
         const cv::Size  target_sz = seg_bbox.size();
@@ -596,9 +698,14 @@ bool MarkerTracker::init(const cv::Mat& main_rgb, const cv::Rect& roi_main)
                   << '\n';
         setTemplateFromBbox(gray_work_, templ_roi);
     } else {
-        std::cout << "bench: template init " << roi.width << 'x' << roi.height << " contrast="
-                  << contrast_score_ << '\n';
+        if (!initMosse(main_rgb, roi)) {
+            resetUnlocked();
+            return false;
+        }
         setTemplateFromBbox(gray_work_, roi);
+        setMosseScaleTemplate(gray_work_, roi);
+        std::cout << "bench: mosse init " << roi.width << 'x' << roi.height << " contrast="
+                  << contrast_score_ << '\n';
     }
 
     if (template_gray_.empty() || ref_size_.width < 4) {
@@ -871,6 +978,113 @@ void MarkerTracker::probeScaleNcc(const cv::Mat& gray, const cv::Point2f& center
     }
 }
 
+void MarkerTracker::setMosseScaleTemplate(const cv::Mat& gray, const cv::Rect& roi)
+{
+    const cv::Rect z = clampRect(roi, gray.cols, gray.rows);
+    if (z.width < 4 || z.height < 4) {
+        mosse_scale_gray_.release();
+        return;
+    }
+    mosse_scale_gray_ = gray(z).clone();
+}
+
+void MarkerTracker::probeScaleMosse(const cv::Point2f& center)
+{
+    if (mosse_scale_gray_.empty() || init_bbox_size_.width <= 0 || init_bbox_size_.height <= 0) {
+        return;
+    }
+
+    const int ref_side = std::max(init_bbox_size_.width, init_bbox_size_.height);
+    int       win_side = std::max(ref_side + 16,
+                            static_cast<int>(ref_side * kMosseScaleRoiFactor));
+    win_side           = std::min(win_side, kMosseScaleRoiMaxSide);
+
+    cv::Rect search{static_cast<int>(std::lround(center.x - win_side * 0.5f)),
+                    static_cast<int>(std::lround(center.y - win_side * 0.5f)), win_side,
+                    win_side};
+    search = clampRect(search, kMainWidth, kMainHeight);
+    if (search.width <= init_bbox_size_.width / 2 ||
+        search.height <= init_bbox_size_.height / 2) {
+        return;
+    }
+
+    const cv::Mat search_gray = gray_work_(search);
+    const int     max_dim     = std::max(search_gray.cols, search_gray.rows);
+    const float   downscale   = (max_dim > kMosseScaleSearchMaxSide)
+                                    ? static_cast<float>(kMosseScaleSearchMaxSide) /
+                                          static_cast<float>(max_dim)
+                                    : 1.0f;
+
+    cv::Mat search_small;
+    if (downscale < 0.999f) {
+        cv::resize(search_gray, search_small, cv::Size(), downscale, downscale, cv::INTER_AREA);
+    } else {
+        search_small = search_gray;
+    }
+
+    float  best_scale = scale_;
+    double best_resp  = -1.0;
+
+    for (int i = 0; i < kMosseScaleLocalSteps; ++i) {
+        const float t   = static_cast<float>(i) /
+                        static_cast<float>(std::max(1, kMosseScaleLocalSteps - 1));
+        const float mul = kMosseScaleLocalMin + (kMosseScaleLocalMax - kMosseScaleLocalMin) * t;
+        const float trial = scale_ * mul;
+
+        const int tw = std::max(2, static_cast<int>(init_bbox_size_.width * trial * downscale));
+        const int th = std::max(2, static_cast<int>(init_bbox_size_.height * trial * downscale));
+        if (tw >= search_small.cols || th >= search_small.rows) {
+            continue;
+        }
+
+        cv::Mat resized;
+        cv::resize(mosse_scale_gray_, resized, cv::Size(tw, th), 0, 0, cv::INTER_AREA);
+        cv::Mat corr;
+        cv::matchTemplate(search_small, resized, corr, cv::TM_CCOEFF_NORMED);
+        double resp = 0.0;
+        cv::minMaxLoc(corr, nullptr, &resp);
+        if (resp > best_resp) {
+            best_resp  = resp;
+            best_scale = trial;
+        }
+    }
+
+    if (best_resp < kMosseScaleMinResponse) {
+        return;
+    }
+
+    const float alpha =
+        (best_scale >= scale_) ? kMosseScaleGrowAlpha : kMosseScaleShrinkAlpha;
+    scale_ = std::clamp(scale_ + (best_scale - scale_) * alpha, kScaleMinRatio, kScaleMaxRatio);
+}
+
+cv::Rect MarkerTracker::bboxForOutput() const
+{
+    if (use_mosse_track_ && mosse_bbox_.width > 0 && mosse_bbox_.height > 0) {
+        const float ratio =
+            scale_ / std::max(kScaleMinRatio, std::max(0.25f, mosse_scale_));
+        cv::Size out{std::max(kScaleMinSidePx, static_cast<int>(mosse_bbox_.width * ratio)),
+                     std::max(kScaleMinSidePx, static_cast<int>(mosse_bbox_.height * ratio))};
+
+        const int frame_cap_w =
+            std::max(kScaleMinSidePx, static_cast<int>(kMainWidth * kBboxMaxFrameSideRatio));
+        const int frame_cap_h =
+            std::max(kScaleMinSidePx, static_cast<int>(kMainHeight * kBboxMaxFrameSideRatio));
+        const int init_cap_w = std::max(
+            kScaleMinSidePx, static_cast<int>(init_bbox_size_.width * kScaleMaxRatio));
+        const int init_cap_h = std::max(
+            kScaleMinSidePx, static_cast<int>(init_bbox_size_.height * kScaleMaxRatio));
+        out.width  = std::clamp(out.width, kScaleMinSidePx, std::min(frame_cap_w, init_cap_w));
+        out.height = std::clamp(out.height, kScaleMinSidePx, std::min(frame_cap_h, init_cap_h));
+
+        return clampRect({static_cast<int>(std::lround(center_.x - out.width * 0.5f)),
+                          static_cast<int>(std::lround(center_.y - out.height * 0.5f)), out.width,
+                          out.height},
+                         kMainWidth, kMainHeight);
+    }
+    return bboxFromCenter();
+}
+
 cv::Rect MarkerTracker::templateRoiAtCenter(const cv::Mat& gray, cv::Point2f c,
                                             cv::Size size) const
 {
@@ -935,7 +1149,7 @@ MarkerDetection MarkerTracker::makeLostOutput() const
 MarkerDetection MarkerTracker::makeLiveHoldOutput(const cv::Point2f& frame_center) const
 {
     MarkerDetection out;
-    const cv::Rect bbox = bboxFromCenter();
+    const cv::Rect bbox = bboxForOutput();
     out.valid           = true;
     out.live            = true;
     out.capturing       = true;
@@ -963,7 +1177,7 @@ bool MarkerTracker::tryReacquire(const cv::Point2f& frame_center, MarkerDetectio
     } else {
         ok = locateWeighted(gray_work_, miss_origin_, found, resp, kSearchWindowTemplate,
                             kSearchDriftTemplate) &&
-             resp >= kTrackMinResponse;
+             resp >= kTrackMinResponseTemplate;
     }
 
     if (!ok) {
@@ -980,7 +1194,15 @@ bool MarkerTracker::tryReacquire(const cv::Point2f& frame_center, MarkerDetectio
     marker_lost_   = false;
     miss_origin_   = {};
 
-    const cv::Rect bbox = bboxFromCenter();
+    if (use_mosse_track_ && mosse_tracker_ && !main_bgr_.empty()) {
+        const cv::Rect bbox = mosseBboxAt(center_, scale_);
+        if (mosse_tracker_->init(main_bgr_, bbox)) {
+            mosse_bbox_  = bbox;
+            mosse_scale_ = scale_;
+        }
+    }
+
+    const cv::Rect bbox = bboxForOutput();
     out.valid           = true;
     out.live            = true;
     out.capturing       = true;
@@ -1054,6 +1276,9 @@ MarkerDetection MarkerTracker::update(const cv::Mat& main_rgb, double dt_sec)
     if (gray_work_.empty()) {
         return out;
     }
+    if (use_mosse_track_) {
+        prepareBgr(main_rgb);
+    }
 
     ++frame_tick_;
     const cv::Point2f frame_center(kMainWidth * 0.5f, kMainHeight * 0.5f);
@@ -1068,10 +1293,18 @@ MarkerDetection MarkerTracker::update(const cv::Mat& main_rgb, double dt_sec)
     double      resp    = 0.0;
     bool        located = false;
 
-    const int lock_frames = use_seg_track_ ? kCenterLockFrames : kCenterLockTemplate;
-    const int fail_limit  = use_seg_track_ ? kVerifyFailToSearch : kVerifyFailTemplate;
+    const int lock_frames =
+        use_seg_track_ ? kCenterLockFrames
+                       : (use_mosse_track_ ? kCenterLockMosse : kCenterLockTemplate);
+    const int fail_limit =
+        use_seg_track_ ? kVerifyFailToSearch
+                       : (use_mosse_track_ ? kMosseFailLimit : kVerifyFailTemplate);
 
     if (frame_tick_ <= lock_frames) {
+        if (use_mosse_track_) {
+            cv::Point2f mosse_c;
+            updateMossePosition(mosse_c);
+        }
         found   = anchor_center_;
         resp    = 1.0;
         located = true;
@@ -1107,32 +1340,49 @@ MarkerDetection MarkerTracker::update(const cv::Mat& main_rgb, double dt_sec)
         if (!located) {
             located = resolvePosition(gray_work_, pred, dt_sec, found, resp);
         }
-    } else {
-        double pred_resp = 0.0;
-        if (responseWeightedAt(gray_work_, pred, pred_resp) &&
-            pred_resp >= kTrackMinResponseTemplate) {
-            found   = pred;
-            resp    = pred_resp;
-            located = true;
-
-            cv::Point2f peak{};
-            double      peak_resp = 0.0;
-            if (locateWeighted(gray_work_, pred, peak, peak_resp, 1.06f, 0.12f)) {
-                const float ref_side = static_cast<float>(std::max(
-                    scaledSize(init_bbox_size_, scale_).width,
-                    scaledSize(init_bbox_size_, scale_).height));
-                if (distSq(peak, pred) <= (ref_side * 0.18f) * (ref_side * 0.18f) &&
-                    peak_resp >= pred_resp - 0.03) {
-                    found = peak;
-                    resp  = peak_resp;
+    } else if (use_mosse_track_) {
+        if (updateMossePosition(found)) {
+            const float ref_side = static_cast<float>(
+                std::max(mosse_bbox_.width, mosse_bbox_.height));
+            const float max_jump = std::max(8.0f, ref_side * kMosseMaxCenterJumpFactor);
+            if (frame_tick_ > 2 && distSq(found, pred) > max_jump * max_jump) {
+                found = pred;
+                resp  = 0.55f;
+                cv::Rect fix = mosse_bbox_;
+                fix.x        = static_cast<int>(std::lround(pred.x - fix.width * 0.5f));
+                fix.y        = static_cast<int>(std::lround(pred.y - fix.height * 0.5f));
+                mosse_bbox_  = clampRect(fix, kMainWidth, kMainHeight);
+                if (mosse_tracker_) {
+                    mosse_tracker_->init(main_bgr_, mosse_bbox_);
                 }
+            } else {
+                resp = 0.92f;
+            }
+            located          = true;
+            mosse_soft_miss_ = 0;
+        } else {
+            ++mosse_soft_miss_;
+            if (mosse_soft_miss_ <= kMosseSoftFailFrames && mosse_bbox_.width > 0) {
+                found   = {mosse_bbox_.x + mosse_bbox_.width * 0.5f,
+                         mosse_bbox_.y + mosse_bbox_.height * 0.5f};
+                resp    = 0.35f;
+                located = true;
             }
         }
-        if (!located) {
-            located = resolvePosition(gray_work_, pred, dt_sec, found, resp);
-        }
+
         if (located && frame_tick_ % kScaleProbeEveryNFrames == 0) {
-            probeScaleNcc(gray_work_, found);
+            const float prev_scale = scale_;
+            probeScaleMosse(found);
+            if (std::abs(scale_ - prev_scale) > 0.02f) {
+                maybeReinitMosse(prev_scale);
+            }
+        }
+
+        if (frame_tick_ % 60 == 0 && located) {
+            std::cout << "bench: mosse track scale=" << scale_ << " box="
+                      << mosse_bbox_.width << 'x' << mosse_bbox_.height << " center="
+                      << static_cast<int>(found.x) << ',' << static_cast<int>(found.y)
+                      << '\n';
         }
     }
 
@@ -1147,7 +1397,7 @@ MarkerDetection MarkerTracker::update(const cv::Mat& main_rgb, double dt_sec)
     fail_streak_ = 0;
     center_      = found;
 
-    if (frame_tick_ <= lock_frames) {
+    if (frame_tick_ <= lock_frames && !use_mosse_track_) {
         velocity_ = {};
     } else {
         const cv::Point2f instant_v = (center_ - prev_center_) / static_cast<float>(dt_sec);
@@ -1155,7 +1405,7 @@ MarkerDetection MarkerTracker::update(const cv::Mat& main_rgb, double dt_sec)
     }
     prev_center_ = center_;
 
-    const cv::Rect bbox = bboxFromCenter();
+    const cv::Rect bbox = bboxForOutput();
     if (!bboxMostlyInFrame(bbox, kMainWidth, kMainHeight)) {
         fail_streak_ = kVerifyFailToSearch;
         return handleMiss(dt_sec, frame_center);

@@ -84,6 +84,21 @@ constexpr int   kRelocateEveryNFrames   = 2;
 constexpr double kTrackReacquireTimeoutSec = 2.0;
 constexpr double kTrackSearchGiveUpSec    = 3.0;
 constexpr int    kScaleMinSidePx        = 12;
+// MOSSE (низкий контраст): своё окно фильтра, отдельно от scale_ на OSD.
+constexpr float  kMosseReinitScaleThreshold = 0.15f;
+constexpr int    kMosseFailLimit            = 35;
+constexpr int    kMosseSoftFailFrames       = 12;
+constexpr int    kCenterLockMosse           = 0;
+constexpr float  kMosseMaxCenterJumpFactor  = 0.28f;
+constexpr float  kMosseScaleRoiFactor       = 2.0f;
+constexpr int    kMosseScaleRoiMaxSide      = 384;
+constexpr int    kMosseScaleSearchMaxSide   = 256;
+constexpr int    kMosseScaleLocalSteps      = 5;
+constexpr float  kMosseScaleLocalMin        = 0.65f;
+constexpr float  kMosseScaleLocalMax        = 1.85f;
+constexpr float  kMosseScaleGrowAlpha       = 0.55f;
+constexpr float  kMosseScaleShrinkAlpha     = 0.35f;
+constexpr float  kMosseScaleMinResponse     = 0.12f;
 
 // Мышь: выделение ROI на PAL-экране (lores 720×576).
 constexpr int kRoiMinSelectSidePx = 24;  // мин. сторона рамки выделения, px
