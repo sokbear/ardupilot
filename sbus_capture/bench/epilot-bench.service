@@ -9,13 +9,13 @@ After=systemd-udev-settle.service
 Type=simple
 User=pilot
 Group=pilot
-SupplementaryGroups=video render i2c gpio input
-WorkingDirectory=/home/pilot/ardupilot/sbus_capture/bench/build
+SupplementaryGroups=video render i2c gpio input tty
+WorkingDirectory=/home/pilot/ardupilot/sbus_capture/bench
+# Даём DRM/камере подняться после включения питания.
+ExecStartPre=/bin/sleep 8
 ExecStart=/home/pilot/ardupilot/sbus_capture/bench/build/electronic_pilot_bench
 Restart=on-failure
 RestartSec=5
-# Даём DRM/камере подняться после включения питания.
-ExecStartPre=/bin/sleep 8
 StandardOutput=journal
 StandardError=journal
 

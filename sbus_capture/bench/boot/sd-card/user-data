@@ -7,7 +7,7 @@ timezone: Europe/Moscow
 
 users:
   - name: pilot
-    groups: users,adm,dialout,audio,netdev,video,plugdev,gpio,i2c,render,input,sudo
+    groups: users,adm,dialout,audio,netdev,video,plugdev,gpio,i2c,render,input,sudo,tty
     shell: /bin/bash
     lock_passwd: false
     plain_text_password: epilot2026

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "config.h"
+
 #include <cstdint>
 
 namespace bench {
@@ -21,7 +23,7 @@ private:
     bool setChannelRaw(int channel, uint16_t off_ticks);
 
     int fd_ = -1;
-    int pwm_hz_ = 50;
+    int pwm_hz_ = kPca9685PwmHz;
 };
 
 }  // namespace bench

@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(PkgConfig REQUIRED)
-find_package(OpenCV REQUIRED core imgproc video tracking)
+find_package(OpenCV REQUIRED core imgproc video dnn tracking)
 
 pkg_check_modules(LIBCAMERA REQUIRED libcamera)
 pkg_check_modules(LIBDRM REQUIRED libdrm)
@@ -16,7 +16,9 @@ add_executable(electronic_pilot_bench
     coord_map.cpp
     display_hub.cpp
     marker_tracker.cpp
+    target_verifier.cpp
     osd_renderer.cpp
+    console_stats.cpp
     composite_out.cpp
     pca9685.cpp
     servo_gimbal.cpp

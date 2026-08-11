@@ -15,11 +15,6 @@ cv::Scalar osdCapturedColor()
     return {kOsdColorCapturedB, kOsdColorCapturedG, kOsdColorCapturedR};
 }
 
-cv::Scalar osdLostColor()
-{
-    return {kOsdColorLostB, kOsdColorLostG, kOsdColorLostR};
-}
-
 cv::Scalar osdCursorColor()
 {
     return {kOsdColorCursorB, kOsdColorCursorG, kOsdColorCursorR};

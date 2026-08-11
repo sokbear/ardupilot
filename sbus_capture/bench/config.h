@@ -3,6 +3,9 @@
 // Стенд этап 1: Pi 5 + камера на гимбале MG946R + PAL composite.
 namespace bench {
 
+// Версия сборки bench — увеличивать при каждом изменении кода перед деплоем.
+inline constexpr const char* kBenchVersion = "1.0.9";
+
 constexpr int kMainWidth  = 1920;
 constexpr int kMainHeight = 1080;
 constexpr int kMainFps    = 60;
@@ -30,6 +33,10 @@ constexpr int kOsdColorCursorB   = 255;
 constexpr int kOsdColorCursorG   = 0;
 constexpr int kOsdColorCursorR   = 0;
 
+// Служебная статистика (PERF) на HDMI-консоль: прямая запись в TTY,
+// не зависит от journald. Пустая строка пути = выключено.
+inline constexpr const char* kConsoleStatsPath = "/dev/tty1";
+
 constexpr float kVelocityEmaAlpha = 0.35f;
 
 // Камера: меньше буферов → ниже задержка (DMA-буферы libcamera).
@@ -40,83 +47,37 @@ constexpr int kCameraPublishSlots  = 3;  // triple-buffer: без clone 1080p в
 // false = камера отдаёт BGR888 (Шаг 5); true = RGB888 → конверсия в трекере.
 constexpr bool kCameraRgb888BytesAreRgb = false;
 
-// === Профиль сцены для трекера (переключаемая ветка) ===
-// 0 = Cluttered (пёстрый фон / лес): цветной CSRT (HOG + Color Names + сегментация).
-// 1 = Sky       (силуэт на небе):    CSRT только по яркости (HOG) — дешевле, без цветового шума.
-constexpr int kTrackerSceneProfile = 0;
+// === NanoTrack (обучаемое ядро) ===
+inline constexpr const char* kNanoBackbonePath = "models/nanotrack_backbone_sim.onnx";
+inline constexpr const char* kNanoNeckheadPath = "models/nanotrack_head_sim.onnx";
+constexpr float kNanoScoreThreshold = 0.60f;
 
-// Трекер: init-сегментация + сегментация в зоне при треке (масштаб и центр).
-constexpr int   kTemplateRefMaxSide     = 96;
-constexpr int   kTrackExtractMaxSide    = 128;
-constexpr int   kNccSearchMaxSide       = 96;
-constexpr float kWeightSigmaFactor      = 0.28f;
-constexpr float kSearchWindowFactor     = 1.08f;
-constexpr float kSearchMaxDriftFactor   = 0.16f;
-constexpr float kLatchMaxPredDistFactor = 0.12f;
-constexpr int   kCenterLockFrames       = 10;
-constexpr int   kCenterLockTemplate     = 14;
-constexpr float kSegMaxZoneFillRatio    = 0.88f;
-constexpr float kSegMinRoiSideRatio     = 0.18f;
-constexpr float kSegMinRoiAreaRatio     = 0.04f;
-constexpr float kSegPreferDistFactor    = 0.45f;
-constexpr float kSegMinCircularity      = 0.55f;
-constexpr float kSegMinZoneAreaFactor   = 0.002f;
-constexpr int   kSegMinAbsAreaPx        = 36;
-constexpr float kSegTrackZoneFactor     = 1.55f;
-constexpr float kSegTrackZoneFactorLarge = 1.85f;
-constexpr float kSegLargeScaleThreshold = 2.2f;
-constexpr float kSegReacquireZoneFactor = 2.4f;
-constexpr float kSegMaxCenterStepFactor = 0.32f;
-constexpr float kScaleSmoothAlpha       = 0.32f;
-constexpr float kScaleMaxStepRatio      = 0.14f;
-constexpr float kScaleMeasureMaxJump    = 1.28f;
-constexpr float kScaleMinRatio          = 0.25f;
-constexpr float kScaleMaxRatio          = 4.5f;
-constexpr float kBboxMaxFrameSideRatio  = 0.42f;
-constexpr float kMinContrastForSeg      = 22.0f;
-constexpr float kSearchWindowTemplate   = 1.14f;
-constexpr float kSearchDriftTemplate    = 0.22f;
-constexpr float kScaleProbeDownMul      = 0.90f;
-constexpr float kScaleProbeUpMul        = 1.12f;
-constexpr int   kScaleProbeEveryNFrames = 6;
-constexpr float kTrackMinResponse       = 0.32f;
-constexpr float kTrackMinResponseTemplate = 0.20f;
-constexpr int   kVerifyFailToSearch     = 18;
-constexpr int   kVerifyFailTemplate     = 35;
-constexpr float kSegInitMaxCenterShift  = 0.20f;
-constexpr float kSegInitMinAreaRatio    = 0.06f;
+// Пределы линейного масштаба рамки относительно исходного ROI,
+// по метрике площади: s = sqrt(S/S0). Грубые перила; основная защита
+// от дрейфа — NCC-верификатор.
+constexpr float kScaleMinRatio         = 0.10f;
+constexpr float kScaleMaxRatio         = 8.0f;
+// Предел стороны рамки как доли стороны кадра.
+constexpr float kBboxMaxFrameSideRatio = 0.85f;
+constexpr bool  kPyramidEnable               = true;
+constexpr float kPyramidUpSearchPx           = 640.0f;
+constexpr float kPyramidDownSearchPx         = 440.0f;
+constexpr int   kPyramidSwitchCooldownFrames = 30;
 constexpr float kTrackMinVisibleFraction = 0.45f;
-constexpr int   kRelocateEveryNFrames   = 2;
 constexpr double kTrackReacquireTimeoutSec = 2.0;
 constexpr double kTrackSearchGiveUpSec    = 3.0;
-constexpr int    kScaleMinSidePx        = 12;
-// MOSSE (низкий контраст): своё окно фильтра, отдельно от scale_ на OSD.
-constexpr float  kMosseReinitScaleThreshold = 0.15f;
-constexpr int    kMosseFailLimit            = 35;
-constexpr int    kMosseSoftFailFrames       = 12;
-constexpr int    kCenterLockMosse           = 0;
-constexpr float  kMosseMaxCenterJumpFactor  = 0.28f;
-constexpr float  kMosseScaleRoiFactor       = 2.0f;
-constexpr int    kMosseScaleRoiMaxSide      = 384;
-constexpr int    kMosseScaleSearchMaxSide   = 256;
-constexpr int    kMosseScaleLocalSteps      = 5;
-constexpr float  kMosseScaleLocalMin        = 0.65f;
-constexpr float  kMosseScaleLocalMax        = 1.85f;
-constexpr float  kMosseScaleGrowAlpha       = 0.55f;
-constexpr float  kMosseScaleShrinkAlpha     = 0.35f;
-constexpr float  kMosseScaleMinResponse     = 0.12f;
 
 // Мышь: выделение ROI на PAL-экране (lores 720×576).
-constexpr int kRoiMinSelectSidePx = 24;  // мин. сторона рамки выделения, px
+constexpr int kRoiMinSelectSidePx = 24;
 constexpr const char* kI2cBusPath     = "/dev/i2c-1";
-constexpr int         kPca9685Address = 0x40;  // адрес по умолчанию (A0–A5 = GND)
-constexpr int         kPanServoChannel  = 0;   // канал PCA9685: азимут
-constexpr int         kTiltServoChannel = 1;   // канал PCA9685: наклон
+constexpr int         kPca9685Address = 0x40;
+constexpr int         kPanServoChannel  = 0;
+constexpr int         kTiltServoChannel = 1;
 constexpr int         kPca9685PwmHz     = 50;
 
 constexpr int kServoPulseMinUs = 1000;
 constexpr int kServoPulseMaxUs = 2000;
-constexpr float kServoTravelDeg = 90.0f;  // ±90° от центра (подстроить механику)
+constexpr float kServoTravelDeg = 90.0f;
 
 // PID: ошибка в пикселях -> шаг угла за кадр (градусы).
 constexpr double kPanPidKp  = 0.04;
@@ -128,5 +89,17 @@ constexpr double kTiltPidKp  = 0.04;
 constexpr double kTiltPidKi  = 0.002;
 constexpr double kTiltPidKd  = 0.01;
 constexpr double kTiltPidMaxStepDeg = 3.0;
+
+// === TargetVerifier: независимая проверка цели поверх NanoTrack ===
+constexpr int   kVerifyCanonSize          = 96;
+constexpr float kVerifyTemplateAdaptAlpha = 0.05f;
+constexpr float kVerifySearchInflate      = 1.30f;
+constexpr float kVerifyNccDropMargin      = 0.30f;
+constexpr float kVerifyBaselineAlpha      = 0.05f;
+constexpr int   kVerifyFailStreak         = 45;
+constexpr float kVerifyHardFloor          = 0.05f;
+constexpr int   kVerifyHardFailStreak     = 12;
+// 0 = выкл; 1 = теневой (только лог); 2 = боевой.
+constexpr int kVerifyMode = 2;
 
 }  // namespace bench

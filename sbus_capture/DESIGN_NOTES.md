@@ -706,5 +706,9 @@ FC: 1×RC-in SBUS, 1×telem-UART (MAVLink), 2×PWM (гимбал) — станд
 ### ПО
 Каталог `sbus_capture/bench/`, бинарник `electronic_pilot_bench`.
 
+**Трекинг (актуально):** `MarkerTracker` — motion-refine, weighted NCC, адаптивный шаблон.
+Спецификация: [`bench/TRACKING_ALGORITHM_SPEC.md`](bench/TRACKING_ALGORITHM_SPEC.md).
+MOSSE — только в git tag `epilot-snapshot-*`.
+
 ### Этап 2 (позже)
 - UART к RP2040, TELEM в OSD, SBUS man-in-the-middle, боевая метка и дальность.

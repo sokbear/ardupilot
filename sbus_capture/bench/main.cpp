@@ -1,6 +1,7 @@
 #include "camera_capture.h"
 #include "config.h"
 #include "composite_out.h"
+#include "console_stats.h"
 #include "coord_map.h"
 #include "display_hub.h"
 #include "gimbal_tracker.h"
@@ -11,8 +12,10 @@
 #include "servo_gimbal.h"
 #include "track_result.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <csignal>
 #include <iostream>
 #include <thread>
@@ -30,6 +33,10 @@ void onSignal(int)
 
 int main()
 {
+    // При запуске через systemd stdout — pipe: без linebuf логи трекинга
+    // (std::cout) не попадают в journal до выхода процесса.
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
+
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
 
@@ -42,6 +49,7 @@ int main()
     bench::MouseInput mouse;
     bench::RoiSelector roi_sel;
     bench::DisplayHub display;
+    bench::ConsoleStats console_stats(bench::kConsoleStatsPath);
 
     if (!camera.open()) {
         return 1;
@@ -98,32 +106,27 @@ int main()
                 osd.render(pal_bgr, snap.det, pal_overlay, snap.telem, snap.roi_ui);
                 composite.present(pal_bgr);
 
-                const unsigned n = ++pal_frames;
-                if ((n % bench::kLoresFps) == 0) {
-                    std::cout << "bench: pal=" << n << " track=" << track_frames.load()
-                              << " cap=" << (snap.det.capturing ? "yes" : "no")
-                              << " trk=" << static_cast<int>(snap.det.track)
-                              << " roi=" << (snap.roi_ui.roi_locked ? "yes" : "no")
-                              << " pan=" << snap.telem.pan_deg
-                              << " tilt=" << snap.telem.tilt_deg;
-                    if (snap.det.capturing) {
-                        std::cout << " ex=" << snap.det.ex << " ey=" << snap.det.ey;
-                        if (snap.det.bbox.width > 0) {
-                            std::cout << " box=" << snap.det.bbox.width << 'x'
-                                      << snap.det.bbox.height;
-                        }
-                    }
-                    std::cout << std::endl;
-                }
+                ++pal_frames;
             }
 
             std::this_thread::sleep_until(next_pal_tick);
         }
     });
 
+    // --- инструментирование стадий трек-цикла ---
+    auto stat_t0 = clock::now();
+    int    stat_frames = 0;
+    double sum_grab = 0.0, sum_upd = 0.0, sum_pub = 0.0;
+    double max_grab = 0.0, max_upd = 0.0, max_pub = 0.0;
+    auto to_ms = [](clock::duration d) {
+        return std::chrono::duration<double, std::milli>(d).count();
+    };
     while (g_running) {
         bench::CameraFrame frame;
-        if (!camera.grabLatest(frame, 1)) {
+        const auto t_g0 = clock::now();
+        const bool got_frame = camera.grabLatest(frame, 1);
+        const double t_grab = to_ms(clock::now() - t_g0);
+        if (!got_frame) {
             continue;
         }
         if (frame.seq == prev_frame_seq) {
@@ -167,8 +170,11 @@ int main()
             telem.mode = "WAIT ROI";
         }
 
+        double t_upd = 0.0;
         if (marker.active() && !frame.main_rgb.empty()) {
+            const auto t_u0 = clock::now();
             det_main = marker.update(frame.main_rgb, dt_sec);
+            t_upd = to_ms(clock::now() - t_u0);
 
             if (marker.needsOperatorRoi()) {
                 roi_sel.clearRoi();
@@ -216,6 +222,39 @@ int main()
                             det_main.bbox.y + det_main.bbox.height * 0.5f};
         }
 
+        // --- агрегируем метрики трек-цикла (до publish → OSD) ---
+        ++stat_frames;
+        sum_grab += t_grab;
+        sum_upd += t_upd;
+        max_grab = std::max(max_grab, t_grab);
+        max_upd  = std::max(max_upd, t_upd);
+        const double stat_elapsed =
+            std::chrono::duration<double>(clock::now() - stat_t0).count();
+        if (stat_elapsed >= 1.0 && stat_frames > 0) {
+            bench::ConsoleStatsSample cs;
+            cs.loop_fps     = stat_frames / std::max(stat_elapsed, 1e-6);
+            cs.grab_avg     = sum_grab / stat_frames;
+            cs.grab_max     = max_grab;
+            cs.upd_avg      = sum_upd / stat_frames;
+            cs.upd_max      = max_upd;
+            cs.pub_avg      = sum_pub / stat_frames;
+            cs.pub_max      = max_pub;
+            cs.box_w        = det_main.bbox.width;
+            cs.box_h        = det_main.bbox.height;
+            cs.score        = (det_main.valid ? det_main.confidence : 0.0f);
+            cs.track_frames = track_frames.load(std::memory_order_relaxed);
+            cs.pal_frames   = pal_frames.load(std::memory_order_relaxed);
+            console_stats.write(cs);
+            // Временный код для замеров (perf → journal).
+            std::cout << "bench: perf loop=" << cs.loop_fps << " box=" << cs.box_w
+                      << "x" << cs.box_h << "\n";
+
+            stat_t0     = clock::now();
+            stat_frames = 0;
+            sum_grab = sum_upd = sum_pub = 0.0;
+            max_grab = max_upd = max_pub = 0.0;
+        }
+
         bench::DisplaySnapshot pub;
         pub.det             = det_main;
         pub.telem           = telem;
@@ -224,7 +263,11 @@ int main()
         pub.track_center    = track_center;
         pub.init_bbox_size  = marker.initBboxSize();
 
+        const auto t_p0 = clock::now();
         display.publish(frame.main_rgb, frame.seq, loop_now, pub);
+        const double t_pub = to_ms(clock::now() - t_p0);
+        sum_pub += t_pub;
+        max_pub  = std::max(max_pub, t_pub);
     }
 
     if (pal_thread.joinable()) {

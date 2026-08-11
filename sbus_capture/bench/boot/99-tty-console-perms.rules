@@ -1,0 +1,2 @@
+# Разрешить группе tty писать на виртуальные консоли (HDMI stats -> /dev/tty1).
+KERNEL=="tty[0-9]*", MODE="0620", GROUP="tty"
