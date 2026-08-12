@@ -4,7 +4,7 @@
 namespace bench {
 
 // Версия сборки bench — увеличивать при каждом изменении кода перед деплоем.
-inline constexpr const char* kBenchVersion = "1.0.9";
+inline constexpr const char* kBenchVersion = "1.0.17";
 
 constexpr int kMainWidth  = 1920;
 constexpr int kMainHeight = 1080;
@@ -67,6 +67,10 @@ constexpr float kTrackMinVisibleFraction = 0.45f;
 constexpr double kTrackReacquireTimeoutSec = 2.0;
 constexpr double kTrackSearchGiveUpSec    = 3.0;
 
+// Диагностика: сглаживание центра рамки на выходе (для ex/ey и OSD).
+// 1.0 = без сглаживания; меньше = сильнее. Старт 0.5.
+constexpr float kMarkerCenterEmaAlpha = 0.5f;
+
 // Мышь: выделение ROI на PAL-экране (lores 720×576).
 constexpr int kRoiMinSelectSidePx = 24;
 constexpr const char* kI2cBusPath     = "/dev/i2c-1";
@@ -75,20 +79,39 @@ constexpr int         kPanServoChannel  = 0;
 constexpr int         kTiltServoChannel = 1;
 constexpr int         kPca9685PwmHz     = 50;
 
-constexpr int kServoPulseMinUs = 1000;
-constexpr int kServoPulseMaxUs = 2000;
-constexpr float kServoTravelDeg = 90.0f;
+// PWM серв: 1500 = центр; ~900 = +45°; ~2100 = −45° (обе оси).
+constexpr int   kServoPulseCenterUs = 1500;
+constexpr int   kServoPulseMinUs    = 900;
+constexpr int   kServoPulseMaxUs    = 2100;
+constexpr float kServoTravelDeg     = 45.0f;
 
-// PID: ошибка в пикселях -> шаг угла за кадр (градусы).
-constexpr double kPanPidKp  = 0.04;
-constexpr double kPanPidKi  = 0.002;
-constexpr double kPanPidKd  = 0.01;
-constexpr double kPanPidMaxStepDeg = 3.0;
+// Тест динамики серв ступенькой (серия углов за один прогон).
+constexpr bool   kGimbalStepTest   = false;  // true — тестовый режим вместо контура
+constexpr int    kServoStepAxis    = 1;      // 0 = pan, 1 = tilt
+constexpr double kServoStepArmSec  = 0.7;    // стабилизация рамки после Live перед серией
+constexpr double kServoStepGapSec  = 3.0;    // пауза в 0° между ступеньками
+constexpr double kServoStepLogSec  = 1.5;    // запись ex(t) на каждой ступеньке
+inline constexpr float kServoStepAngles[] = {5.0f, 10.0f, 20.0f, -5.0f, -10.0f, -20.0f};
 
-constexpr double kTiltPidKp  = 0.04;
-constexpr double kTiltPidKi  = 0.002;
-constexpr double kTiltPidKd  = 0.01;
-constexpr double kTiltPidMaxStepDeg = 3.0;
+// false: PID от ошибки трекинга (ex/ey); true: курсор мыши (отладка серв).
+constexpr bool kGimbalMouseDrive = false;
+
+// Прореживание команд серве: не чаще раза в этот период (сек). Серва медленная
+// (задержка ~60мс, отработка ~0.2с) — частые команды обгоняют её и раскачивают.
+constexpr double kGimbalCommandPeriodSec = 0.1;
+
+// Позиционный контур.
+constexpr double kGimbalPidDeadbandPx   = 35.0;
+constexpr float  kGimbalErrorEmaAlpha     = 0.40f;
+constexpr double kPanPidKp                = 0.008;
+constexpr double kPanPidKi                = 0.0;
+constexpr double kPanPidKd                = 0.001;
+constexpr double kPanPidMaxStepDeg        = 5.0;
+
+constexpr double kTiltPidKp              = 0.008;
+constexpr double kTiltPidKi              = 0.0;
+constexpr double kTiltPidKd              = 0.001;
+constexpr double kTiltPidMaxStepDeg      = 5.0;
 
 // === TargetVerifier: независимая проверка цели поверх NanoTrack ===
 constexpr int   kVerifyCanonSize          = 96;

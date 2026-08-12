@@ -5,6 +5,7 @@
 #include "coord_map.h"
 #include "display_hub.h"
 #include "gimbal_tracker.h"
+#include "gimbal_mouse.h"
 #include "marker_tracker.h"
 #include "mouse_input.h"
 #include "osd_renderer.h"
@@ -15,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <csignal>
 #include <iostream>
@@ -27,6 +29,111 @@ std::atomic<bool> g_running{true};
 void onSignal(int)
 {
     g_running = false;
+}
+
+enum class StepState { WaitLive, Arming, Gap, Stepping, Done };
+
+void runStepTest(const bench::MarkerDetection& det, bench::ServoGimbal& gimbal)
+{
+    using clock = std::chrono::steady_clock;
+
+    static StepState        state   = StepState::WaitLive;
+    static int              idx     = 0;
+    static clock::time_point arm_t0 {};
+    static clock::time_point gap_t0 {};
+    static clock::time_point step_t0 {};
+
+    const auto now  = clock::now();
+    const bool live = det.valid && det.capturing &&
+                      det.track == bench::MarkerTrackMode::Live;
+
+    const auto elapsed_sec = [](clock::time_point t0) {
+        return std::chrono::duration<double>(clock::now() - t0).count();
+    };
+
+    const auto axis_name = []() -> const char* {
+        return bench::kServoStepAxis == 0 ? "pan" : "tilt";
+    };
+
+    const auto cmd_deg = [&gimbal]() -> float {
+        return bench::kServoStepAxis == 0 ? gimbal.panDeg() : gimbal.tiltDeg();
+    };
+
+    const auto set_zero = [&gimbal]() { gimbal.setAnglesDeg(0.0f, 0.0f); };
+
+    const auto apply_step = [&gimbal](float deg) {
+        if (bench::kServoStepAxis == 0) {
+            gimbal.setAnglesDeg(deg, 0.0f);
+        } else {
+            gimbal.setAnglesDeg(0.0f, deg);
+        }
+    };
+
+    if (!live) {
+        set_zero();
+        if (state != StepState::Done) {
+            state   = StepState::WaitLive;
+            idx     = 0;
+            arm_t0  = {};
+            gap_t0  = {};
+            step_t0 = {};
+        } else {
+            state = StepState::WaitLive;
+            idx   = 0;
+        }
+        return;
+    }
+
+    switch (state) {
+    case StepState::WaitLive:
+        set_zero();
+        arm_t0 = now;
+        state  = StepState::Arming;
+        break;
+
+    case StepState::Arming:
+        set_zero();
+        if (elapsed_sec(arm_t0) >= bench::kServoStepArmSec) {
+            idx     = 0;
+            gap_t0  = now;
+            state   = StepState::Gap;
+        }
+        break;
+
+    case StepState::Gap:
+        set_zero();
+        if (elapsed_sec(gap_t0) >= bench::kServoStepGapSec) {
+            std::cout << "bench: step BEGIN axis=" << axis_name()
+                      << " deg=" << bench::kServoStepAngles[idx] << '\n';
+            apply_step(bench::kServoStepAngles[idx]);
+            step_t0 = now;
+            state   = StepState::Stepping;
+        }
+        break;
+
+    case StepState::Stepping: {
+        const double t_sec = elapsed_sec(step_t0);
+        std::cout << "bench: step t=" << t_sec << " ex=" << det.ex
+                  << " ey=" << det.ey << " cmd=" << cmd_deg() << '\n';
+        if (t_sec >= bench::kServoStepLogSec) {
+            std::cout << "bench: step END deg=" << bench::kServoStepAngles[idx]
+                      << '\n';
+            set_zero();
+            ++idx;
+            if (idx < static_cast<int>(std::size(bench::kServoStepAngles))) {
+                gap_t0 = now;
+                state  = StepState::Gap;
+            } else {
+                state = StepState::Done;
+            }
+        }
+        break;
+    }
+
+    case StepState::Done:
+        set_zero();
+        break;
+    }
 }
 
 }  // namespace
@@ -70,7 +177,7 @@ int main()
 
     bench::OsdTelemetry telem;
     telem.status    = "STEND";
-    telem.mode      = "WAIT ROI";
+    telem.mode      = bench::kGimbalMouseDrive ? "MOUSE GIMBAL" : "WAIT ROI";
     telem.gimbal_hw = gimbal.hardwareActive();
 
     cv::Rect prev_roi;
@@ -145,10 +252,22 @@ int main()
 
         mouse.poll();
         roi_sel.update(mouse, bench::kMainWidth, bench::kMainHeight);
+
+        const bool roi_cancel = mouse.rightPressed();
+        if (roi_cancel) {
+            roi_sel.clearRoi();
+            marker.reset();
+            tracker.reset();
+            prev_roi          = {};
+            prev_was_lost     = false;
+            lost_banner_until = {};
+            telem.mode        = "WAIT ROI";
+        }
+
         mouse.clearEdges();
 
         const cv::Rect roi_main = roi_sel.trackRoiMain();
-        if (roi_main.width > 0 &&
+        if (!roi_cancel && roi_main.width > 0 &&
             (roi_main.x != prev_roi.x || roi_main.y != prev_roi.y ||
              roi_main.width != prev_roi.width || roi_main.height != prev_roi.height)) {
             if (frame.main_rgb.empty()) {
@@ -157,6 +276,7 @@ int main()
                 prev_roi = roi_main;
                 prev_was_lost = false;
                 lost_banner_until = {};
+                tracker.armTracking();
                 telem.mode = "TRACK";
                 std::cout << "bench: tracker init " << roi_main.x << ',' << roi_main.y << ' '
                           << roi_main.width << 'x' << roi_main.height << '\n';
@@ -165,6 +285,7 @@ int main()
             }
         } else if (!roi_sel.hasTrackRoi() && prev_roi.width > 0) {
             marker.reset();
+            tracker.reset();
             prev_roi = {};
             prev_was_lost = false;
             telem.mode = "WAIT ROI";
@@ -179,6 +300,7 @@ int main()
             if (marker.needsOperatorRoi()) {
                 roi_sel.clearRoi();
                 marker.reset();
+                tracker.reset();
                 prev_roi          = {};
                 prev_was_lost     = false;
                 lost_banner_until = {};
@@ -212,7 +334,30 @@ int main()
             telem.lost_banner = true;
         }
 
-        const bench::GimbalState gstate = tracker.update(det_main, dt_sec);
+        const bench::GimbalState gstate = [&]() {
+            if (bench::kGimbalMouseDrive && mouse.isOpen()) {
+                const bench::GimbalMouseAngles ang = bench::gimbalAnglesFromCursor(
+                    mouse.cursorX(), mouse.cursorY(),
+                    bench::kLoresWidth, bench::kLoresHeight);
+                gimbal.setAnglesDeg(ang.pan_deg, ang.tilt_deg);
+                bench::GimbalState st;
+                st.pan_deg   = gimbal.panDeg();
+                st.tilt_deg  = gimbal.tiltDeg();
+                st.tracking  = true;
+                telem.mode   = "MOUSE GIMBAL";
+                return st;
+            }
+            if (bench::kGimbalStepTest) {
+                runStepTest(det_main, gimbal);
+                bench::GimbalState st;
+                st.pan_deg  = gimbal.panDeg();
+                st.tilt_deg = gimbal.tiltDeg();
+                st.tracking = det_main.capturing;
+                telem.mode  = "STEP TEST";
+                return st;
+            }
+            return tracker.update(det_main, dt_sec);
+        }();
         telem.pan_deg  = gstate.pan_deg;
         telem.tilt_deg = gstate.tilt_deg;
 

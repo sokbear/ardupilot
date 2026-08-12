@@ -34,7 +34,7 @@ private:
     bool bboxSizeSane(const cv::Rect& r) const;
     bool maybeSwitchPyramid(const cv::Rect& proven_bbox_main);
     MarkerDetection makeOutput(const cv::Rect& bbox, MarkerTrackMode mode,
-                               bool capturing, float confidence) const;
+                               bool capturing, float confidence);
     MarkerDetection handleMiss(double dt_sec);
 
     cv::Ptr<cv::TrackerNano> tracker_;
@@ -49,6 +49,8 @@ private:
     cv::Point2f center_{};
     cv::Point2f prev_center_{};
     cv::Point2f velocity_{};
+    cv::Point2f smoothed_center_{};
+    bool        has_smoothed_center_ = false;
     cv::Rect    last_bbox_{};
 
     bool   active_         = false;

@@ -3,22 +3,23 @@
 #include "config.h"
 
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 
 namespace bench {
 
-namespace {
-
-int angleToPulseUs(float angle_deg)
+int ServoGimbal::pulseUsForAngleDeg(float angle_deg)
 {
     const float clamped =
         std::clamp(angle_deg, -kServoTravelDeg, kServoTravelDeg);
-    const float norm = (clamped + kServoTravelDeg) / (2.0f * kServoTravelDeg);
-    return static_cast<int>(kServoPulseMinUs +
-                            norm * (kServoPulseMaxUs - kServoPulseMinUs));
+    const float half_span =
+        static_cast<float>(kServoPulseMaxUs - kServoPulseMinUs) * 0.5f;
+    const float us_per_deg = half_span / kServoTravelDeg;
+    // +угол → меньший PWM (900 мкс), −угол → больший (2100 мкс).
+    const float pulse =
+        static_cast<float>(kServoPulseCenterUs) - clamped * us_per_deg;
+    return static_cast<int>(std::lround(pulse));
 }
-
-}  // namespace
 
 bool ServoGimbal::open()
 {
@@ -55,8 +56,10 @@ void ServoGimbal::setAnglesDeg(float pan_deg, float tilt_deg)
     tilt_deg_ = std::clamp(tilt_deg, -kServoTravelDeg, kServoTravelDeg);
 
     if (pca_) {
-        writeChannelPulseUs(kPanServoChannel, angleToPulseUs(pan_deg_));
-        writeChannelPulseUs(kTiltServoChannel, angleToPulseUs(tilt_deg_));
+        const int pan_pulse  = pulseUsForAngleDeg(pan_deg_);
+        const int tilt_pulse = pulseUsForAngleDeg(tilt_deg_);
+        writeChannelPulseUs(kPanServoChannel, pan_pulse);
+        writeChannelPulseUs(kTiltServoChannel, tilt_pulse);
     }
 }
 

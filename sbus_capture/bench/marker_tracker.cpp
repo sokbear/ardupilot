@@ -189,6 +189,8 @@ void MarkerTracker::resetUnlocked()
     center_         = {};
     prev_center_    = {};
     velocity_       = {};
+    smoothed_center_      = {};
+    has_smoothed_center_  = false;
     last_bbox_      = {};
     active_         = false;
     search_gave_up_ = false;
@@ -261,7 +263,7 @@ bool MarkerTracker::init(const cv::Mat& main_rgb, const cv::Rect& roi_main)
 }
 
 MarkerDetection MarkerTracker::makeOutput(const cv::Rect& bbox, MarkerTrackMode mode,
-                                            bool capturing, float confidence) const
+                                            bool capturing, float confidence)
 {
     MarkerDetection out;
     const cv::Point2f frame_center(kMainWidth * 0.5f, kMainHeight * 0.5f);
@@ -269,10 +271,30 @@ MarkerDetection MarkerTracker::makeOutput(const cv::Rect& bbox, MarkerTrackMode 
     out.live       = (mode == MarkerTrackMode::Live || mode == MarkerTrackMode::Predicted);
     out.capturing  = capturing;
     out.track      = mode;
-    out.bbox       = bbox;
-    out.ex         = (bbox.width > 0) ? (bbox.x + bbox.width * 0.5f - frame_center.x) : 0.0;
-    out.ey         = (bbox.height > 0) ? (bbox.y + bbox.height * 0.5f - frame_center.y) : 0.0;
     out.confidence = confidence;
+
+    if (bbox.width > 0 && bbox.height > 0) {
+        const cv::Point2f raw_center(bbox.x + bbox.width * 0.5f,
+                                     bbox.y + bbox.height * 0.5f);
+        if (!has_smoothed_center_) {
+            smoothed_center_     = raw_center;
+            has_smoothed_center_ = true;
+        } else {
+            const float a = kMarkerCenterEmaAlpha;
+            smoothed_center_ = smoothed_center_ * (1.0f - a) + raw_center * a;
+        }
+        out.ex = smoothed_center_.x - frame_center.x;
+        out.ey = smoothed_center_.y - frame_center.y;
+        out.bbox = cv::Rect(
+            static_cast<int>(std::lround(smoothed_center_.x - bbox.width * 0.5f)),
+            static_cast<int>(std::lround(smoothed_center_.y - bbox.height * 0.5f)),
+            bbox.width, bbox.height);
+    } else {
+        out.ex = 0.0;
+        out.ey = 0.0;
+        has_smoothed_center_ = false;
+        out.bbox = bbox;
+    }
     return out;
 }
 

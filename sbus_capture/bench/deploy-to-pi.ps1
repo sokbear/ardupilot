@@ -5,6 +5,11 @@ $ErrorActionPreference = "Stop"
 $remote = "/home/pilot/ardupilot/sbus_capture/bench"
 $files  = @(
     "main.cpp",
+    "config.h",
+    "gimbal_tracker.cpp",
+    "gimbal_mouse.h",
+    "servo_gimbal.cpp",
+    "servo_gimbal.h",
     "marker_tracker.cpp",
     "marker_tracker.h",
     "target_verifier.cpp",

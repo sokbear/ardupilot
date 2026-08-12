@@ -19,6 +19,9 @@ public:
 
     bool hardwareActive() const { return hardware_active_; }
 
+    // Угол → длительность импульса (мкс) по калибровке config.h.
+    static int pulseUsForAngleDeg(float angle_deg);
+
 private:
     void writeChannelPulseUs(int channel, int pulse_us);
 

@@ -21,10 +21,19 @@ public:
 
     void reset();
 
+    // Разрешить PID после успешного init ROI (после ПКМ — удерживаем центр).
+    void armTracking();
+
 private:
     ServoGimbal& gimbal_;
     Pid          pan_pid_;
     Pid          tilt_pid_;
+    double       smoothed_ex_        = 0.0;
+    double       smoothed_ey_        = 0.0;
+    bool         has_smoothed_       = false;
+    bool         return_to_center_   = true;
+    int          telem_counter_      = 0;
+    double       cmd_accum_sec_      = 0.0;   // накопитель времени между командами серве
 };
 
 }  // namespace bench
